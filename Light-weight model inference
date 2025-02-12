@@ -1,0 +1,94 @@
+from keras.models import load_model
+from time import sleep
+from keras.preprocessing.image import img_to_array
+from keras.preprocessing import image
+import cv2
+import numpy as np
+import tensorflow as tf
+
+# Load emotion model
+emotion_interpreter = tf.lite.Interpreter(model_path="expert_emo71.tflite")
+emotion_interpreter.allocate_tensors()
+emotion_input_details = emotion_interpreter.get_input_details()
+emotion_output_details = emotion_interpreter.get_output_details()
+emotion_interpreter.resize_tensor_input(emotion_input_details[0]['index'], (1, 48, 48, 1))
+emotion_interpreter.allocate_tensors()
+emotion_input_shape = emotion_input_details[0]['shape']
+emotion_labels = ['neutral', 'happy', 'sad', 'surprise', 'fear', 'disgust', 'angry']
+
+# Load activity model
+activity_interpreter = tf.lite.Interpreter(model_path="ar2.tflite")
+activity_interpreter.allocate_tensors()
+activity_input_details = activity_interpreter.get_input_details()
+activity_output_details = activity_interpreter.get_output_details()
+activity_interpreter.resize_tensor_input(activity_input_details[0]['index'], (1, 48, 48, 1))
+activity_interpreter.allocate_tensors()
+activity_input_shape = activity_input_details[0]['shape']
+activity_labels = ['applauding', 'blowing_bubbles', 'brushing_teeth', 'cleaning_the_floor', 'climbing', 'cooking', 'cutting_trees', 'cutting_vegetables', 'drinking', 'feeding_horse', 'fishing', 'fixing_a_bike', 'fixing_a_car', 'gardening', 'holding_an_umbrella', 'jumping', 'looking_through_a_microscope', 'looking_through_a_telescope', 'phoning', 'playing_guitar', 'playing_violin', 'pouring_liquid', 'pushing_a_cart', 'reading', 'riding_a_bike', 'riding_a_horse', 'rowing_a_boat', 'running', 'shooting_an_arrow', 'smoking', 'taking_photos', 'texting_message', 'throwing_frisby', 'using_a_computer', 'walking_the_dog', 'washing_dishes', 'watching_TV', 'waving_hands', 'writing_on_a_board', 'writing_on_a_book']
+
+# Load object detection model (YOLO)
+net = cv2.dnn.readNet("yolov3.weights", "yolov3.cfg")
+layer_names = net.getUnconnectedOutLayersNames()
+colors = np.random.uniform(0, 255, size=(len(activity_labels), 3))
+
+# Load face classifier
+face_classifier = cv2.CascadeClassifier(cv2.data.haarcascades + 'haarcascade_frontalface_default.xml')
+
+cap = cv2.VideoCapture(0)
+
+while True:
+    ret, frame = cap.read()
+    gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+    faces = face_classifier.detectMultiScale(gray, 1.3, 5)
+
+    # Object detection
+    blob = cv2.dnn.blobFromImage(frame, 0.00392, (416, 416), swapRB=True, crop=False)
+    net.setInput(blob)
+    outs = net.forward(layer_names)
+
+    for out in outs:
+        for detection in out:
+            scores = detection[5:]
+            class_id = np.argmax(scores)
+            confidence = scores[class_id]
+            if confidence > 0.5:
+                center_x = int(detection[0] * frame.shape[1])
+                center_y = int(detection[1] * frame.shape[0])
+                w = int(detection[2] * frame.shape[1])
+                h = int(detection[3] * frame.shape[0])
+                x = int(center_x - w / 2)
+                y = int(center_y - h / 2)
+
+                label = activity_labels[class_id]
+                color = colors[class_id]
+                cv2.rectangle(frame, (x, y), (x + w, y + h), color, 2)
+                cv2.putText(frame, label, (x, y - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 2)
+
+    for (x, y, w, h) in faces:
+        cv2.rectangle(frame, (x, y), (x + w, y + h), (255, 0, 0), 2)
+        roi_gray = gray[y:y+h, x:x+w]
+        roi_gray = cv2.resize(roi_gray, (48, 48), interpolation=cv2.INTER_AREA)
+        roi_gray = np.array(roi_gray).reshape(-1, 48, 48, 1)
+        roi_gray = roi_gray.astype(np.float32)
+
+        # Emotion prediction
+        emotion_interpreter.set_tensor(emotion_input_details[0]['index'], roi_gray)
+        emotion_interpreter.invoke()
+        emotion_preds = emotion_interpreter.get_tensor(emotion_output_details[0]['index'])
+        emotion_label = emotion_labels[emotion_preds.argmax()]
+
+        # Activity prediction
+        activity_interpreter.set_tensor(activity_input_details[0]['index'], roi_gray)
+        activity_interpreter.invoke()
+        activity_preds = activity_interpreter.get_tensor(activity_output_details[0]['index'])
+        activity_label = activity_labels[activity_preds.argmax()]
+
+        cv2.putText(frame, f'Emotion: {emotion_label}', (10, 25), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 2)
+        cv2.putText(frame, f'Activity: {activity_label}', (10, 60), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 255), 2)
+
+    cv2.imshow('Combined Detector', frame)
+    if cv2.waitKey(1) & 0xFF == ord('q'):
+        break
+
+cap.release()
+cv2.destroyAllWindows()
