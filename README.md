@@ -1,1 +1,2 @@
-# Face Emotion Recognition
+# Human Activity Recognition and Face Emotion Recognition 
+
